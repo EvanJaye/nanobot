@@ -163,16 +163,32 @@ class FeishuChannel(BaseChannel):
             return
         
         try:
+            # Validate message content
+            if not msg.content or not msg.content.strip():
+                logger.warning("Cannot send empty message to Feishu")
+                return
+
             # Determine receive_id_type based on chat_id format
             # open_id starts with "ou_", chat_id starts with "oc_"
             if msg.chat_id.startswith("oc_"):
                 receive_id_type = "chat_id"
             else:
                 receive_id_type = "open_id"
-            
+
+            # Clean content - remove problematic characters and ensure proper encoding
+            clean_content = msg.content.replace('\x00', '')  # Remove null bytes
+            clean_content = clean_content.strip()
+
+            # Ensure content is not too long (Feishu has limits)
+            if len(clean_content) > 20000:  # Feishu text message limit
+                clean_content = clean_content[:19997] + "..."
+
             # Build text message content
-            content = json.dumps({"text": msg.content})
-            
+            content_dict = {"text": clean_content}
+            content = json.dumps(content_dict, ensure_ascii=False)
+
+            logger.debug(f"Sending Feishu message: chat_id={msg.chat_id}, content={content[:100]}...")
+
             request = CreateMessageRequest.builder() \
                 .receive_id_type(receive_id_type) \
                 .request_body(
@@ -182,19 +198,22 @@ class FeishuChannel(BaseChannel):
                     .content(content)
                     .build()
                 ).build()
-            
+
             response = self._client.im.v1.message.create(request)
-            
+
             if not response.success():
                 logger.error(
                     f"Failed to send Feishu message: code={response.code}, "
-                    f"msg={response.msg}, log_id={response.get_log_id()}"
+                    f"msg={response.msg}, log_id={response.get_log_id()}, "
+                    f"content_preview={clean_content[:50]}..."
                 )
             else:
-                logger.debug(f"Feishu message sent to {msg.chat_id}")
-                
+                logger.debug(f"Feishu message sent successfully to {msg.chat_id}")
+
+        except json.JSONEncodeError as e:
+            logger.error(f"Failed to encode message content for Feishu: {e}")
         except Exception as e:
-            logger.error(f"Error sending Feishu message: {e}")
+            logger.error(f"Error sending Feishu message: {e}", exc_info=True)
     
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """
